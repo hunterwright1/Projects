@@ -1,0 +1,576 @@
+---
+title: "Bitcoin as an Investment: Exploring Trading Behavior Before, During, and After the COVID-19 Pandemic"
+author: "Hunter Wright"
+date: "`r Sys.Date()`"
+output: pdf_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(pacman)
+p_load(quantmod, tidyverse, dplyr, ggplot2, xts, lubridate, knitr, kableExtra, trend, forecast, tseries, stargazer, sandwich, lmtest)
+
+fred1 <- read_csv("/Users/hunterwright/Desktop/EC423/BlogPost/blogData/fredgraph.csv")
+fred2 <- read_csv("/Users/hunterwright/Desktop/EC423/BlogPost/blogData/PSAVERT.csv")
+```
+
+```{r Data Cleaning, include=FALSE}
+# Creation of FRED data sets
+fred1 <- fred1 %>%
+  rename(date = DATE) %>%
+  select(-UNRATE) %>%
+  rename(cpi = CPIAUCSL)
+
+fred2 <- fred2 %>%
+  rename(psr = PSAVERT) %>%
+  rename(date = DATE)
+
+fred1$date <- as.Date(fred1$date)
+fred2$date <- as.Date(fred2$date)
+
+fred1 <- fred1 %>%
+  filter(date >= as.Date("2014-09-01"))
+fred2 <- fred2 %>%
+  filter(date >= as.Date("2014-09-01"))
+
+# Creation of BTC Volume data set
+getSymbols("BTC-USD", src = "yahoo")
+trade <- apply.monthly(`BTC-USD`[, "BTC-USD.Volume"], sum)
+trade <- data.frame(Date = index(trade), coredata(trade))
+trade <- trade %>%
+  rename(oldDate = Date)
+trade$oldDate <- as.Date(trade$oldDate)
+trade <- trade %>%
+  filter(oldDate <= as.Date("2024-10-31"))
+trade <- trade %>%
+  mutate(date = floor_date(oldDate, "month"))
+
+# Combine data sets
+numbers <- fred1 %>%
+  left_join(trade, by = "date") %>%
+  left_join(fred2, by = "date")
+
+numbers <- numbers %>%
+  select(-oldDate)%>%
+  rename(volume = BTC.USD.Volume)
+
+# Normalize CPI
+
+cpi_base <- numbers %>% 
+  filter(date == as.Date("2014-09-01")) %>% 
+  pull(cpi)
+
+numbers <- numbers %>%
+  mutate(cpi_normalized = cpi / cpi_base)
+
+# Adjust trading volume for inflation
+numbers <- numbers %>%
+  mutate(volumeAFI = volume / cpi_normalized) %>%
+  rename(volume_unadjusted = volume)
+```
+
+Since its creation in 2009, Bitcoin has been the foundation of the cryptocurrency market and a popular choice for investors looking for exposure to alternative investments. In recent years, trading volume, or the amount of dollars of Bitcoin exchanging hands every day, has increased dramatically. Bitcoin's value has soared and speculative investment has increased along with it as Bitcoin's high volatility attracts risk-loving traders and new investors alike. Though Bitcoin's intended purpose is to act as an alternative currency, disconnected from any central banking system, investors aren't treating it as such. This is due in part to factors like the merchant acceptance gap, or the lack of vendors that accept Bitcoin as payment, and Bitcoin's high price volatility. Instead, it is treated much like any other financial security, to be bought and sold for profit. The first government securities were traded in Venice in the 13th century, and European companies began issuing stocks in the 1700s. The centuries-long history of traditional securities compared with Bitcoin's relative infancy calls into question its status as a serious investment in the minds of investors. 
+
+The personal saving rate is defined as the portion of personal income that is used either to provide funds to capital markets or to invest in real assets such as residences (FRED). During the COVID-19 pandemic, a combination of decreased consumer spending and government stimulus led to an extreme increase in household savings rates  (Aladangady et al., 2022). Logically, if investors are treating Bitcoin as a serious investment and not a speculative gamble, we might expect a positive relationship between Bitcoin trading volume and the personal saving rate. As people allocate a larger percentage of their income to savings, part of it goes to buying Bitcoin, which increases with each increase in the personal saving rate.
+
+This paper aims to examine Bitcoin trading volume in relation to this increase in consumer saving and if there is any significant correlation between the two to answer the following question: Have investors adopted Bitcoin as a serious alternative to traditional investments, or does it serve primarily speculative purposes? I explore this question in the following sections:
+
+### 1. Overview
+
+### 2. Testing and Normalization
+
+### 3. Analysis
+
+### 4. Conclusion
+
+After taking a quick look at the data, I review the relevant testing
+required for time series data, analyze the relationship between the
+personal saving rate and trading volume, and draw conclusions from my
+findings.
+
+# 1. Overview
+
+First, it's imperative that we graphically represent the personal saving
+rate and trading volume metrics to get a better idea of their movements
+over time.
+
+```{r Graphs, fig.align="center", fig.height=3, fig.width=8}
+library(patchwork)
+
+# Creating PSR and Volume plots
+plot1 <- numbers %>%
+  ggplot(aes(x = date, y = psr)) +
+  geom_line() + 
+  labs(
+    x = "Time",
+    y = "Personal Saving Rate (%)",
+    title = "Personal Saving Rate Over Time",
+    caption = "Source: FRED"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_text(size = 6),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    plot.title = element_text(size = 12, face = "bold"),
+    plot.caption = element_text(size = 6, face = "italic")
+  )
+
+plot2 <- numbers %>%
+  ggplot(aes(x = date, y = volumeAFI / 1e9)) + # Adjust volume down for readability
+  geom_line() + 
+  labs(
+    x = "Time",
+    y = "Trading Volume",
+    title = "Monthly Bitcoin Trading Volume Over Time",
+    subtitle = "Inflation Adjusted, Volume in Billions of $",
+    caption = "Source: Yahoo Finance"
+  ) +
+  scale_y_continuous(labels = scales::comma) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_text(size = 6),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    plot.title = element_text(size = 12, face = "bold"),
+    plot.subtitle = element_text(size = 8, face = "italic"),
+    plot.caption = element_text(size = 6, face = "italic")
+  )
+
+# Put plots next to each other
+(plot1 + plot2) + 
+  plot_layout(widths = c(2, 2))
+```
+
+As previously discussed, shortly after the onset of the COVID-19 pandemic, there is a sharp increase in the personal saving rate. With nowhere to spend their money, many Americans found themselves with a large increase in disposable income and subsequently put it away in savings and investments. Around this same time, Bitcoin trading volume also began to increase dramatically as cryptocurrency became more and more popular.
+
+```{r Descriptive Statistics, include=FALSE}
+
+# Desc. stats for data, not utilized in final product
+
+psr_stats <- numbers %>%
+  summarise(    
+    Mean = mean(psr),
+    Median = median(psr),
+    St.Dev = sd(psr),
+    Min = min(psr),
+    Max = max(psr)
+  )
+
+volume_stats <- numbers %>%
+  summarise(
+    Mean = mean(volumeAFI)/1e9,
+    Median = median(volumeAFI)/1e9,
+    St.Dev = sd(volumeAFI)/1e9,
+    Min = min(volumeAFI)/1e9,
+    Max = max(volumeAFI)/1e9
+  )
+```
+
+```{r Desc Statistics Tables, include=FALSE}
+
+# Not utilized
+
+kable(psr_stats, caption = "Personal Saving Rate Descriptive Statistics") %>%
+  kable_styling(full_width = FALSE)
+
+kable(volume_stats, caption = "Trading Volume Descriptive Statistics") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+# 2. Testing and Normalization
+
+Time series data presents unique challenges for regression analysis,
+with many data sets exhibiting characteristics like non-stationarity, autocorrelation, and heteroskedasticity. These characteristics can lead to spurious regression results and ultimately render any analysis
+ineffective. Extensive testing and normalization is required to prepare time series data for regression analysis. A battery of tests was conducted on both the personal saving rate and trading volume data, listed below:
+
+-   Mann-Kendall Test (Trend Detection)
+
+-   Augmented Dickey-Fuller (ADF) Test (Stationarity)
+
+-   Ljung-Box Test (Autocorrelation)
+
+-   ACF and PACF Plotting (Lag Determination)
+
+```{r Trend Analysis, include=FALSE}
+#Mann-Kendall Test
+mk.test(numbers$psr)
+mk.test(numbers$volumeAFI)
+
+#Interpretations:
+
+#z: standardized strength and direction of trend (positive - upward, negative - downward)
+
+#S: if positive, more upward than downward value pairs in data (upward trend) and etc.
+
+#tau: Normalized version of S, ranges from 1 to -1. Closer to 1 or -1 indicates stronger monotonic trend(what MK test is testing for)
+
+# No significant trend in PSR data
+# Statistically significant strong positive trend in BTC trading data
+```
+
+```{r PSR Decomposition (useless), include=FALSE}
+
+# Convert data to time series objects
+ts_psr <- ts(numbers$psr, start = c(year(min(numbers$date)), month(min(numbers$date))), frequency = 12)
+
+# Decompose the Personal Saving Rate time series
+decomp_psr <- decompose(ts_psr, type = "multiplicative")
+
+# Plot
+plot(decomp_psr)
+
+# The seasonal component should be flat or negligible if the data is truly seasonally adjusted
+
+# Unemployment rate strongly influenced by trend. Seasonal fluctuations are small (between 0.95 and 1.05) and predictable. Random graph captures COVID-19 shock.
+```
+
+```{r Trading Volume Decomposition, include=FALSE}
+
+# Decomposing into trend, seasonal, and residual components
+# CPI and Unemployment already seasonally adjusted
+
+ts_volume <- ts(numbers$volumeAFI, start = c(year(min(numbers$date)), month(min(numbers$date))), frequency = 12)
+
+# Decompose the BTC trading volume time series
+decomp_volume <- decompose(ts_volume,type = "multiplicative")
+
+# Plot
+plot(decomp_volume)
+
+#Analysis
+#Massive increase in trading volume between 2020 and 2021 primarily captured in trend component. Seasonal fluctuations are consistent and substantial which requires seasonal adjustment
+```
+
+To account for inflation, the trading volume data was adjusted using normalized CPI numbers from FRED. The Mann-Kendall tests revealed no significant trend in the personal saving rate and a significant strong positive trend in the trading volume data. After decomposing the trading volume data, a strong seasonal trend was detected, necessitating deseasonalization. Both variables were also non-stationary and the personal saving rate data was autocorrelated. To adjust for stationarity, the first difference of both variables was taken and a one-month lag was selected to account for autocorrelation.
+
+```{r Seasonal vs Deseasonalized Volume Plot, include=FALSE}
+# Add deseasonalized volume to data set
+numbers <- numbers %>%
+  mutate(volume_adj = volumeAFI / decomp_volume$seasonal)
+
+# Plotted seasonal vs. deseasonalized data
+plot(ts_volume/1e9, 
+     main = "Original vs Deseasonalized Trading Volume", 
+     col = "blue", 
+     lty = 1, 
+     ylab = "Volume (Billions)", 
+     xlab = "Time")
+
+# Adding the deseasonalized line
+lines(numbers$volume_adj/1e9, col = "red", lty = 2)
+
+# Adding the legend
+legend("topright", 
+       legend = c("Original", "Deseasonalized"), 
+       col = c("blue", "red"), 
+       lty = c(1, 2))
+```
+
+```{r ADF Test for Stationarity, include=FALSE}
+
+# ADF test for Unemployment Rate
+adf_psr <- adf.test(numbers$psr, alternative = "stationary")
+
+# ADF test for BTC Trading Volume
+adf_volume <- adf.test(numbers$volume_adj, alternative = "stationary")
+
+# View the results
+adf_psr
+adf_volume
+
+#p-value is greater than 0.05 in both data. Indicated non-stationarity.
+
+# What does this mean: Data that is non stationary is time series data with statistical properties that change over time, making it unpredictable and difficult to model or forecast
+```
+
+```{r Differencing and 2nd ADF Test, include=FALSE}
+#Because data is non-stationary: Take the first difference of data
+
+# ADF test for differenced PSR
+diff_psr <- diff(numbers$psr)
+diff_psr_adf <- adf.test(diff_psr, alternative = "stationary")
+
+# ADF test for differenced volume
+diff_volume <- diff(numbers$volume_adj)
+diff_volume_adf <- adf.test(diff_volume, alternative = "stationary")
+
+diff_volume_adf
+diff_psr_adf
+
+# After first differencing both data sets and then running them through the ADF test, the personal saving rate and volume data sets tested as stationary.
+```
+
+```{r Ljung-Box test for autocorrelation, include=FALSE}
+# Ljung-Box test for Volume
+Box.test(diff_volume, lag = 10, type = "Ljung-Box")
+
+# Ljung-Box test for PSR
+Box.test(diff_psr, lag = 10, type = "Ljung-Box")
+
+#Box-Ljung test returns p-value of 0.036 for volume (autocorrelation present) and 0.8812 for psr (no autocorrelation present)
+
+#Chi-squared: Higher values mean more evidence of autocorrelation
+
+# Volume Example: “The Ljung-Box test for volume returned a chi-squared value of  \chi^2 = 25  with  df = 10, which is greater than the critical value of 18.31, and a p-value of 0.006, indicating significant autocorrelation in the differenced series.”
+
+```
+
+```{r Autocorrelation Analysis, include=FALSE}
+
+#ACF and PACF for volume
+acf(diff_volume, main = "ACF for BTC Trading Volume")
+pacf(diff_volume, main = "PACF for BTC Trading Volume")
+
+#ACF and PACF for unrate
+acf(diff_psr, main = "ACF for Personal Saving Rate")
+pacf(diff_psr, main = "PACF for Personal Saving Rate")
+
+#Interpretations:
+# ACFs: Peak at 0 is because a time series is perfectly autocorrelated with itself at 0 lag (obviously). Values near 0 for other lags means little to no significant autocorrelation, good sign for stationarity.
+
+#PACFs: Value below -0.2 indicates possible significant correlation at the specific lag. could suggest small lag effect, maybe look into this further. 
+
+#Volume ACF: One spike at ~2 months. Barely below -0.2 indicating weak autocorrelation at this point. This is reflected in the PACF.
+
+#PSR ACF: Two moderate autocorrelation spikes, one at 1 month, another at 11. Reflected in PACF
+
+```
+
+```{r New Data Frame, include=FALSE}
+
+# Adding difference of logs data
+diff_logPSR <- diff(log(numbers$psr))
+diff_logVol <- diff(log(numbers$volume_adj))
+
+# Adding lags
+numbers2 <- numbers %>%
+  mutate(
+    diff_volume = c(NA, diff_volume),
+    diff_psr = c(NA, diff_psr),
+    diff_logpsr = c(NA, diff_logPSR),
+    diff_logvol = c(NA, diff_logVol),
+    lag1_psr = lag(diff_psr, 1),
+    lag2_psr = lag(diff_psr, 2),
+    lag3_psr = lag(diff_psr, 3),
+    lag6_psr = lag(diff_psr, 6)
+  )
+
+#Cleaning data and removing NAs
+numbers2cleaned <- numbers2 %>%
+  filter(!is.na(lag1_psr))
+
+numbersLAGS <- numbers2 %>%
+  filter(!is.na(lag6_psr))
+```
+
+```{r Deterministic Trend Testing, include=FALSE}
+trend_model_volume <- lm(diff_volume ~ date, data = numbers2)
+summary(trend_model_volume)
+
+#Can conclude that the differenced data has no deterministic trend
+```
+
+# 3. Analysis
+
+```{r Model 1 Regression, include=FALSE}
+
+# Regression model with 2 lags, volume is in billions of $
+model1 <- lm(diff_volume/1e9 ~ diff_psr + lag1_psr, data = numbers2cleaned)
+summary(model1)
+
+#Don't forget to add robust standard errors
+
+robustM1 <- sqrt(diag(vcovHC(model1, type = "HC1")))
+
+m1Robust <- coeftest(model1, vcov = vcovHC(model1, type = "HC1"))
+print(m1Robust)
+```
+
+```{r Model 1 ggplot, include=FALSE}
+numbers2cleaned %>%
+  ggplot(aes(x = diff_psr, y = diff_volume / 1e9)) +
+    geom_point() +
+    geom_smooth(method = "lm")
+  
+```
+
+```{r Model 1 Stargazer, results='asis'}
+
+cat("After testing and normalization, I regressed trading volume on personal saving rate data, including a one-month lag, shown below.")
+
+stargazer(model1, type = "latex",
+          se = list(robustM1),
+          keep.stat = c("n", "rsq"),
+          digits = 3,
+          title = "Relationship Between the Personal Saving Rate and Bitcoin Trading Volume",
+          dep.var.labels = c("Trading Volume (Billions of \\$)"),
+          covariate.labels = c(
+            "Personal Saving Rate",
+            "Personal Saving Rate (1-Month Lag)"
+          ),
+          header = FALSE,
+          no.space = TRUE,
+          table.placement = "H")
+
+cat("This regression reveals a positive lagged relationship between the personal saving rate and Bitcoin trading volume. I find that on average, a 1% month-over-month increase in the personal saving rate is associated with a $15.2 billion increase in Bitcoin trading volume 1 month later, ceteris paribus. Though this result is compelling, it's important to note that the p-value is 0.089, rendering it not statistically significant at the 5% significance level. Importantly, all three models in this paper utilize robust standard errors to account for residual heteroskedasticity. Before using robust standard errors, this estimate was significant at the 5% level. The other estimates in this regression are not statistically significant either, indicating no strong evidence against the null hypothesis. In other words, this model does not find any significant link between the personal saving rate and Bitcoin trading volume.")
+
+```
+
+```{r Adding controls, include=FALSE}
+
+start_date <- "2014-09-01"
+end_date <- "2024-10-02"
+
+covid <- as.Date("2020-03-01")
+
+numbers3cleaned <- numbers2cleaned
+
+# Covid dummy variable
+numbers3cleaned$covid <- ifelse(numbers3cleaned$date >= covid, 1, 0)
+
+
+getSymbols("FEDFUNDS", from = "2014-11-01", to = end_date, src = "FRED")
+
+# Convert to monthly data
+fedfunds <- to.monthly(FEDFUNDS, indexAt = "lastof", OHLC = FALSE)
+
+# Adjust the index to the first day of the month
+index(fedfunds) <- as.Date(format(index(fedfunds), "%Y-%m-01"))
+
+numbers3cleaned$fedfunds <- fedfunds
+
+# Money Supply (M2) Data from FRED
+getSymbols("M2SL", src = "FRED", from = "2014-11-01", to = "2024-10-01")
+
+# Convert M2 to monthly data
+m2 <- to.monthly(M2SL, indexAt = "lastof", OHLC = FALSE)
+
+# Adjust the index to the first day of the month
+index(m2) <- as.Date(format(index(m2), "%Y-%m-01"))
+
+#Get VIX Data from Yahoo Finance
+getSymbols("VIXCLS", src = "FRED", from = "2014-11-01", to = "2024-10-02")
+
+# Convert VIX to monthly data
+vix <- to.monthly(VIXCLS, indexAt = "lastof", OHLC = FALSE)
+
+# Adjust the index to the first day of the month
+index(vix) <- as.Date(format(index(vix), "%Y-%m-01"))
+
+numbers3cleaned$vix <- vix
+numbers3cleaned$m2 <- m2
+```
+
+```{r Model 2 Regression - Controls, include=FALSE}
+
+model2 <- lm(diff_volume / 1e9 ~ diff_psr + lag1_psr + covid + m2 + vix, data = numbers3cleaned)
+
+summary(model2)
+
+m2Robust <- coeftest(model2, vcov = vcovHC(model2, type = "HC1"))
+print(m2Robust)
+
+robustM2 <- sqrt(diag(vcovHC(model2, type = "HC1")))
+
+```
+
+```{r Model 2 Stargazer, results = "asis"}
+
+cat("In the next model, I add controls for COVID-19, M2 money supply, and the VIX (an index measuring overall stock market volatility). The M2 money supply and VIX controls were added to account for broader economic and market conditions that could potentially impact Bitcoin trading volume. During the pandemic, both the Trump and Biden administrations authorized government stimulus checks to be paid out to low income families. This increased the money supply, which could have influenced the increase in BTC trading volume observed during this time period. Additionally, the VIX recorded the highest stock market volatility since the 2008 Global Financial Crisis in March 2020. Though the cryptocurrency market is a different entity, it likely experienced similar volatility to the stock market, also affecting Bitcoin trading volume. Next, I introduce a COVID-19 dummy variable to account for the pandemic. It's no secret that the onset of COVID-19 was a catalyst for many macroeconomic fluctuations, and it likely also had an affect on Bitcoin trading volume. Lastly, I maintain the one-month lag that was present in the first model to test for lagged effects on Bitcoin trading volume.")
+
+stargazer(model2, type = "latex",
+          se = list(robustM2),
+          keep.stat = c("n", "rsq", "adj.rsq"),
+          digits = 3,
+          title = "Relationship Between the Personal Saving Rate and Bitcoin Trading Volume",
+          dep.var.labels=c("Trading Volume (Billions of \\$)"),
+          covariate.labels = c(
+            "Personal Saving Rate",
+            "Personal Saving Rate (1-Month Lag)",
+            "Covid Dummy Variable",
+            "M2 Money Supply",
+            "VIX"
+          ),
+          header = FALSE,
+          no.space = TRUE,
+          table.placement = "H")
+
+cat("The second regression reveals no statistically significant results, other than a weaker-than-before positive relationship between trading volume and the one-month lagged personal saving rate. Moreover, including these controls reduced the statistical significance of the one-month lag variable, and when adjusting for controls, reduced the $R^2$ slightly. This lack of statistical significance indicates that macroeconomic factors like stock market volatility and the money supply have no systemic influence on Bitcoin trading volume.")
+
+```
+
+```{r Model 3 Multi-lag Regression, include=FALSE}
+model3 <- lm(diff_volume / 1e9 ~ diff_psr + lag1_psr + lag2_psr + lag3_psr + lag6_psr, data = numbersLAGS)
+
+summary(model3)
+
+m3Robust <- coeftest(model3, vcov = vcovHC(model3, type = "HC1"))
+print(m3Robust)
+
+robustM3 <- sqrt(diag(vcovHC(model3, type = "HC1")))
+```
+```{r Model 3 Stargazer, results = "asis"}
+
+cat("The third and final regression contains one, two, three, and six month lags to account for lagged effects of month-over-month changes in the personal saving rate on Bitcoin trading volume. It does not contain the previously included controls which provided no statistically significant evidence of influence on trading volume.")
+
+stargazer(model3, type = "latex",
+          se = list(robustM3),
+          keep.stat = c("n", "adj.rsq"),
+          digits = 3,
+          title = "Relationship between PSR and Bitcoin Trading Volume",
+          dep.var.labels=c("Trading Volume (Billions of \\$)"),
+          covariate.labels = c(
+            "Personal Saving Rate",
+            "Personal Saving Rate (1-Month Lag)",
+            "Personal Saving Rate (2-Month Lag)",
+            "Personal Saving Rate (3-Month Lag)",
+            "Personal Saving Rate (6-Month Lag)"
+          ),
+          header = FALSE,
+          no.space = TRUE,
+          table.placement = "H")
+
+cat("The last regression yields no statistically significant results. It is further evidence that the personal saving rate, lagged or not, does not have a systematic influence on Bitcoin trading volume.")
+
+```
+
+
+# 4. Conclusion
+
+This paper aims to answer the question of whether or not investors treat Bitcoin as a serious investment by exploring the relationship between the personal saving rate and Bitcoin trading volume. As a reminder, the personal saving rate represents the proportion of disposable personal income that an individual allocates to savings and investments. In my models, I used differenced personal saving rate data, which means that the regression estimates were associated with month-over-month changes. In all three models, there were no statistically significant estimates, necessitating that I fail to reject my null hypothesis and conclude that there is no statistically significant relationship between the personal saving rate and Bitcoin trading volume.
+
+The inherent lack of statistical significance can be attributed to multiple factors. In my second model, I attempted to control for broad macroeconomic indicators like stock market volatility and money supply. These failed to make any meaningful difference in my model, indicating that macroeconomic conditions have no real influence on Bitcoin trading data. I tried multiple other controls during my analysis including CPI, the federal funds rate, and the SPY S&P 500 index fund. None of these yielded significant results, and were removed from the model for simplicity. Additionally, there are omitted variables affecting Bitcoin trading volume that are impossible to control for. The price of Bitcoin is also notoriously responsive to policy announcements and internet "hype," and trading volume is heavily influenced by whether or not Bitcoin is experiencing a bull run. The price of Bitcoin recently passed $100,000 after Donald Trump won the U.S. election promising to be "pro-crypto." During the month of November, more than 10 trillion dollars in cryptocurrency was traded as a result (usfunds.com). Though November 2024 is not included in the data I use in this paper, it does serve as an example of how bull runs influence trading volume. The last factor that the lack of statistical significance can likely be attributed to is the simple fact that there is no consistent or measurable relationship between the personal saving rate and Bitcoin trading volume. Though there are many outside factors that influence both of these metrics, the findings from these models point towards an absence of correlation between them.
+
+So what can we conclude from these findings in the context of the research question? Though concrete conclusions cannot be drawn from this paper alone, the lack of a statistically significant relationship between the personal saving rate and Bitcoin trading volume suggests that Bitcoin trading volume might not be closely tied to traditional investment behaviors reflected in saving patterns. As I stated earlier, a logical argument in favor of Bitcoin as a serious investment would be substantiated by a positive correlation between the personal saving rate and trading volume. In other words, there would be increase in trading volume when people are saving more money. This claim is not supported in any of the models, so I must conclude that because Bitcoin trading volume isn't correlated with an increase in saving and investment, no reasonable conclusion about whether or not investors view Bitcoin as a serious alternative investment can be made.
+
+
+
+
+## Citations:
+
+Aladangady, Aditya, David Cho, Laura Feiveson, and Eugenio Pinto (2022). "Excess Savings during the COVID-19 Pandemic," FEDS Notes. Washington: Board of Governors of the Federal Reserve System, October 21, 2022, https://doi.org/10.17016/2380-7172.3223
+
+Yahoo Finance. (2024). Historical data for Bitcoin (BTC-USD). https://finance.yahoo.com/quote/BTC-USD/history?p=BTC-USD 
+(retrieved via the quantmod package)
+
+U.S. Bureau of Labor Statistics, Consumer Price Index for All Urban Consumers: All Items in U.S. City Average [CPIAUCSL], retrieved from FRED, Federal Reserve Bank of St. Louis; https://fred.stlouisfed.org/series/CPIAUCSL, November 15, 2024.
+
+Board of Governors of the Federal Reserve System (US), Federal Funds Effective Rate [FEDFUNDS], retrieved from FRED, Federal Reserve Bank of St. Louis; https://fred.stlouisfed.org/series/FEDFUNDS, November 30, 2024.
+
+U.S. Bureau of Economic Analysis, Personal Saving Rate [PSAVERT], retrieved from FRED, Federal Reserve Bank of St. Louis; https://fred.stlouisfed.org/series/PSAVERT, December 1, 2024.
+
+Board of Governors of the Federal Reserve System (US), M2 [M2SL], retrieved from FRED, Federal Reserve Bank of St. Louis; https://fred.stlouisfed.org/series/M2SL, December 1, 2024.
+
+Chicago Board Options Exchange, CBOE Volatility Index: VIX [VIXCLS], retrieved from FRED, Federal Reserve Bank of St. Louis; https://fred.stlouisfed.org/series/VIXCLS, December 1, 2024.
+
+“Bitcoin’s Rise to $100,000 Signals Global Adoption Shift.” USGI, https://www.usfunds.com/resource/bitcoins-rise-to-100000-signals-global-adoption-shift/. December 6, 2024.
+
+
