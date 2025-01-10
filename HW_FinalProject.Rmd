@@ -1,0 +1,211 @@
+---
+title: "HW_FinalProject"
+author: "Hunter Wright"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Variables:
+
+-   date: Month/year (starting from January 1992 to December 2022)
+
+-   retailsale: Nominal monthly total sales/expenditures for retail goods (in million USD)
+
+-   holiday: A dummy variable =1 if the time-series observation is a holiday month (i.e. November or December)
+
+-   inflator: CPI divided by baseline CPI. This will be used to convert nominal value to real value
+
+-   ur: Monthly unemployment rate
+
+```{r}
+library(pacman)
+p_load(tidyverse)
+data <- read_csv(url("https://raw.githubusercontent.com/qmatsuzawa/EC421Data/main/Data/Shopping.csv"))
+```
+
+#### 1. First we should convert the nominal retail sales into real values. Using dplyr, create a new variable called “realsales”, which is the real retail sales and equal to nominal value times the inflator
+
+```{r}
+data = data %>%
+  mutate(
+    realsales <- retailsale*inflator
+  )
+names(data)[6] = "realsales"
+```
+
+#### 2. Let’s descriptively see if retail sales is higher/lower during the holiday season. Using dplyr, find the average (real) retail sales during holiday months vs. non-holiday months. Are the retail sales higher during the holidays?
+
+```{r}
+data %>%
+  group_by(holiday)%>%
+  summarize(
+    holiday_mean = mean(realsales)
+  )
+
+
+```
+
+Yes. Average retail sales during the holiday season are 496,411.7 dollars, while off-season sales are 445,070 dollars. This is a difference of 51,341.7 dollars.
+
+#### 3. Estimate a static model estimating the impact of holiday months (X) on real expenditure (Y). Make sure to include control (X) for unemployment rate. What do you find? Explain
+
+```{r}
+
+lm(realsales ~ holiday + ur, data = data) %>%
+  broom::tidy()
+
+fit <- lm(realsales ~ holiday + ur, data = data)
+
+
+```
+
+After regressing the impact of holiday months on real expenditure while controlling for unemployment, I found the following:
+
+-   Real expenditure is 500,293.32 dollars during the off-season at an unemployment rate of 0, ceteris paribus.
+
+-   During the holiday season, real expenditure increases by 49,713.54 dollars, ceteris paribus.
+
+-   For every 1 unit increase in unemployment rate, real expenditure decreases by 9,469.65 dollars, ceteris paribus.
+
+The key takeaway from this regression is that the holiday season increases real expenditure, while rising unemployment decreases real expenditure.
+
+#### 4. In question 3, even though we are only interested in the effect of holiday months on retail sales/expenditures, we still included unemployment rate as our X variable. Explain why we did that.
+
+The unemployment rate is a potentially confounding variable that could influence our regression and lead to Omitted Variable Bias. As seen in the regression from question 3, unemployment rate has a significant effect on real expenditure, which could have affected our model if it was not included. Neglecting to control for unemployment would render our estimate biased and unusable.
+
+#### 5. Are we worried about heteroskedasticity here? Explain. Maybe some diagnostic (if possible) will be useful
+
+Let's conduct a few tests to determine if heteroskedasticity is an issue in this model:
+
+First, we'll conduct a visual test.
+
+```{r}
+
+data$residual <- resid(fit)
+
+ggplot(data, aes(x = ur, y = residual, color=factor(holiday)))+ 
+  geom_point() +
+  labs(
+    x="Residual", 
+    y="Unemployment", 
+    title = "Unemployment and its Corresponding Residuals",
+    caption = "Orange = Off-season, Blue = Holiday Season",
+  scale_color_manual(values=c("deepskyblue3", "brown4")))
+```
+
+It's difficult to conclude if there is heteroskedasticity present from this model alone. Next, we will conduct a Goldfeldt-Quant Test to determine if heteroskedasticity is present in our model.
+
+```{r}
+
+data <- data %>%
+  arrange(ur)
+
+d1 <- data[c(1:124),]
+d2 <- data[c(125:248),]
+d3 <- data[c(249:372),]
+
+fit1 <- lm(realsales ~ ur, data = d1)
+fit3 <- lm(realsales ~ ur, data = d3)
+
+rss1 <- sum(resid(fit1)^2)
+rss3 <- sum(resid(fit3)^2)
+
+teststat <- rss3/rss1
+pf(teststat, 124-2, 124-2, lower.tail=FALSE)
+
+```
+
+Our null hypothesis is homoskedasticity and our alternative hypothesis is heteroskedasticity. After conducting the Goldfeldt-Quant test, we get a p-value of 0.01326391, which is significant at the 0.05 level. This allows us to reject our null hypothesis and conclude that there may be heteroskedasticity in this estimate.
+
+Lastly, we will conduct White's test to further understand if heteroskedasticity is present in our estimate.
+
+```{r}
+data$residsquared <- resid(fit)^2
+
+fit4 <- lm(residsquared ~ ur + holiday + I(ur^2) + I(holiday*ur), data)
+
+teststat <- 372*summary(fit4)$r.sq
+
+pchisq(teststat, df=2, lower.tail=FALSE)
+
+
+```
+
+Our null hypothesis is homoskedasticity and our alternative hypothesis is heteroskedasticity. After conducting White's test, we get a p-value of 0.2457162, which is not significant at the 0.05 level. This means we must fail to reject our null hypothesis and conclude that there is no heteroskedasticity in this estimate.
+
+After conducting three separate tests (Visual, Goldfeldt-Quant, and White's), one indicated that heteroskedasticity was present in the estimate, one indicated that there was none present, and one was inconclusive. From the evidence collected, and regarding the graph, we are worried about heteroskedasticity and its effects on our estimate.
+
+#### 6. Are we worried about autocorrelation here? Explain. Maybe some diagnostic (if possible) will be useful
+
+First, we will conduct a visual inspection of the data to help us conclude if autocorrelation is present in this estimate.
+
+```{r}
+
+ggplot(data = data, aes(residual,lag(residual,1))) + 
+  geom_point() +
+  labs(
+    x = "Residuals",
+    y = "Lagged Residuals",
+    title = "AR(1) Visual Inspection"
+  )
+
+```
+
+It's difficult to conclude if there is autocorrelation present in this estimate from a visual inspection alone. Although there seems to be a slight positive trend within the data, it is not significant enough to be conclusive. Because of this, we must conduct a hypothesis test to determine if there is autocorrelation present in this estimate.
+
+```{r}
+
+ar_fit <- lm(residual ~ lag(residual, 1) -1, data = data)
+
+ar_teststat <- summary(ar_fit)$r.squared * 372
+pchisq(ar_teststat, df=1, lower.tail=FALSE)
+
+```
+
+After conducting a hypothesis test where the null hypothesis was non-autocorrelation and the alternative hypothesis was autocorrelation, the p-value returned was 1.333258e-20. This is significant at the 0.05 level, and allows us to reject our null hypothesis and conclude that there may be autocorrelation in our estimate.
+
+#### 7. Are we worried about non-stationary condition here? Explain. Maybe some diagnostic (if possible) will be useful
+
+For a model to be stationary, it must satisfy each of the following assumptions:
+
+-   $E(Y_t) = E(Y_s)$ for all time periods. $s \neq t$. The expected value is the same for all time periods.
+
+-   $Var(Y_t) = Var(Y_s)$ for all time periods. $s \neq t$ The variance of the variable is the same for all time periods.
+
+-   $Cov(Y_t, Y_{t-k}) = Cov(Y_s, Y_{s-k})$. $s \neq t$ The covariance between two points does NOT depend on time, only the distance between said points.
+
+If our estimate violates any of these assumptions, we must conclude that it is non-stationary.
+
+First, we will conduct a visual inspection of the data over time.
+
+```{r}
+
+ggplot(data = data, aes(x = date, y= realsales)) +
+  geom_line() +
+  labs(title = "Real Sales Over Time",
+       y = "Real Sales",
+       x = "Time"
+       )
+
+```
+
+After a visual inspection of the data, we can conclude that the data exhibits a deterministic trend that increases over time. This is logically consistent with our original question. Every holiday season, real sales drastically increase and then decrease after the season is over, and then repeat the same process next year.
+
+Just to be sure, we will conduct a Dickey-Fuller test to be certain that this is a deterministic trend.
+
+```{r}
+
+lm(realsales ~ lag(realsales,1)-1, data = data) %>%
+  broom::tidy()
+
+```
+
+To find the t-statistic, we must use the formula $t = \frac{\hat\beta-\beta}{SE(\hat\beta)}$. Plugging in the $\hat\beta$ that we calculated, we get $t = \frac{0.9854047-1}{.00874}$. Because this is not equal to 1, the p-value is significant at the 0.05 level, and we can reject our null hypothesis. This is result is consistent with a deterministic trend, and thus, we conclude that our estimate is non-stationary.
+
+#### 8. Do you think your conclusions you made in question 3 is correct? Why or why not? If not, how would you potentially fix for these? Note: You don’t have to fix these issues, but rather explaining in a paragraph or so would be sufficient
+
+I believe they are correct. Logically, it makes sense that real expenditure would increase during the holiday season and decrease after it was over. It also makes sense that higher unemployment would cause a drop in real expenditure, because unemployed individuals have less disposable income to spend. There are a few available options we have to fix our heteroskedasticity, autocorrelation, and non-stationary process. First, we can attempt to fix our heteroskedasticity by log transforming our variables, using Weighted Least Squares, or making Standard Error adjustments (Robust SE). To fix our autocorrelation, we can add more lags, check for misspecification, or use Feasible Generalized Least Squares. Lastly, to remedy our non-stationary process, we can use first differencing.
