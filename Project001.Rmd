@@ -1,0 +1,172 @@
+---
+title: "Project001"
+author: "Hunter Wright"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r load data, include=FALSE}
+library(pacman)
+p_load(tidyverse, readr, dplyr, ggplot2, broom, skimr, janitor, caret, glmnet)
+trainOLD <- read_csv("data/train.csv")
+testOLD <- read_csv("data/test.csv")
+set.seed(2341)
+```
+
+```{r data clean, include=FALSE}
+train <- trainOLD %>%
+  clean_names(case = "lower_camel") %>%
+  rename("SalePrice" = "salePrice") %>%
+  rename("firstFloorSqFt" = "x1StFlrSf") %>%
+  rename("secondFloorSqFt" = "x2NdFlrSf") %>%
+  rename("threeSznPorch" = "x3SsnPorch") %>%
+  mutate(
+    alley = case_when(
+      is.na(alley) ~ "None",
+      alley == "Grvl" ~ "Grvl",
+      alley == "Pave" ~ "Pave"
+    )
+  ) %>%
+  mutate(
+    bsmtQual = case_when(
+      is.na(bsmtQual) ~ "Nb",
+      TRUE ~ bsmtQual
+    )
+  ) %>%
+  mutate(
+    bsmtCond = case_when(
+      is.na(bsmtCond) ~ "Nb",
+      TRUE ~ bsmtCond
+    )
+  )
+
+test <- testOLD %>%
+  clean_names(case = "lower_camel") %>%
+  rename("firstFloorSqFt" = "x1StFlrSf") %>%
+  rename("secondFloorSqFt" = "x2NdFlrSf") %>%
+  rename("threeSznPorch" = "x3SsnPorch") %>%
+  mutate(
+    alley = case_when(
+      is.na(alley) ~ "None",
+      alley == "Grvl" ~ "Grvl",
+      alley == "Pave" ~ "Pave"
+    )
+  ) %>%
+  mutate(
+    bsmtQual = case_when(
+      is.na(bsmtQual) ~ "Nb",
+      TRUE ~ bsmtQual
+    )
+  ) %>%
+  mutate(
+    bsmtCond = case_when(
+      is.na(bsmtCond) ~ "Nb",
+      TRUE ~ bsmtCond
+    )
+  )
+```
+
+```{r sampling}
+
+folds <- sample(rep(1:5, length.out = length(train)))
+subgroups <- split(train, folds)
+
+
+```
+
+```{r 1st ols approach, fold 1}
+# manual five fold CV
+cvTrain <- do.call(rbind, subgroups[c("2", "3", "4", "5")]) #train: folds 2-5
+cvTest <- subgroups[[1]] # fold 1 is test data
+
+model1 <- lm(SalePrice ~ lotArea + overallQual + overallCond + yearBuilt + factor(neighborhood) + yearRemodAdd, data = cvTrain)
+
+predict1 <- predict(model1, newdata =cvTest)
+
+fold1rmse1 <- sqrt(mean((cvTest$SalePrice - predict1)^2))
+fold1rmse1
+
+```
+
+```{r 1st ols approach, for loop}
+
+rmse1 <- numeric(5)
+
+for (i in 2:5) {
+  loopTrain <- do.call(rbind, subgroups[-i]) #select all folds except current
+  loopTest <- subgroups[[i]] #select current fold
+  
+  model <- lm(SalePrice ~ lotArea + overallQual + overallCond + yearBuilt + factor(neighborhood) + yearRemodAdd, data = loopTrain)
+  
+  prediction <- predict(model, newdata = loopTest)
+  
+  rmse1[i] <- sqrt(mean((loopTest$SalePrice - prediction)^2))
+}
+
+rmse1 <- c(rmse1, fold1rmse1)[-1] #remove empty first value, add fold 1 rmse
+
+print(mean(rmse1))
+print(sd(rmse1))
+```
+
+Average RMSE: 41,433.21
+
+SD of RMSE across the five folds is 4426.2
+
+```{r 2nd ols approach, fold 1}
+
+model2 <- lm(SalePrice ~ factor(street) + lotArea + overallQual + overallCond + yearBuilt + factor(neighborhood) + factor(bldgType) + factor(houseStyle) + yearRemodAdd + factor(exterQual) + bedroomAbvGr + kitchenAbvGr, data = cvTrain)
+
+predict2 <- predict(model2, newdata = cvTest)
+
+fold1rmse2 <- sqrt(mean((cvTest$SalePrice - predict2)^2))
+fold1rmse2
+
+```
+
+```{r 2ne ols approach, for loop}
+rmse2 <- numeric(5)
+
+for (i in 2:5) {
+  loopTrain <- do.call(rbind, subgroups[-i])
+  loopTest <- subgroups[[i]]
+  
+  model <- lm(SalePrice ~ factor(street) + lotArea + overallQual + overallCond + yearBuilt + factor(neighborhood) + factor(bldgType) + factor(houseStyle) + yearRemodAdd + factor(exterQual) + bedroomAbvGr + kitchenAbvGr, data = loopTrain)
+  
+  prediction <- predict(model, newdata = loopTest)
+  
+  rmse2[i] <- sqrt(mean((loopTest$SalePrice - prediction)^2))
+}
+
+rmse2 <- c(rmse2, fold1rmse2)[-1]
+
+print(mean(rmse2))
+print(sd(rmse2))
+
+```
+
+Average RMSE: 38,257.31
+
+SD of RMSE across the five folds is 4366.53
+
+#### Is one model demonstrably better than the other? Explain.
+
+Yes, the second model is demonstrably better than the first, with an avergae RMSE that was lower by about 3,000. This makes sense, because there are more variables in the second model. This increased the $R^2$ from 0.74 to 0.79, and generally improved the model's prediction accuracy.
+
+#### How does 5-fold cross validation compare to the validation-set approach?
+
+There are trade offs to both approaches, but 5-fold cross validation is definitely better than the validation-set approach. In the validation-set approach, you split the data into two groups one time, and train the data on one group and test it on the other. The trade off here is that while this is not computationally intensive, you lose a lot of training data to the test data set, and the model created has a higher variance. 5-fold cross validation lets you create multiple models and average the MSE. This may be more computationally intensive, but provides a much better model to work with.
+
+#### Why do we generally prefer cross validation to the validation-set approach?
+
+The primary reason is that cross validation has a much better bias-variance trade off than the validation-set approach. The validation-set approach sacrifices a lot of training data to be test data, and raises the variance as the amount of training data decreases.
+
+#### Does the structure of our data or the goal of our prediction problem suggest that we should use a different approach to cross-validation? Briefly explain your answer.
+
+There are some aspects of the data that could affect the groups created with k-fold cross validation. For example, if a group by chance selects a bunch of homes all from the same neighborhood, they could all have very similar home prices and thus induce unforeseen bias in the training data. The same goes for other variables that may cause similar home prices among many different observations. Because the goal of our prediction is to predict housing prices, reducing the chance that data selection introduces bias should be the top priority.

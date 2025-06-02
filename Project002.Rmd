@@ -1,0 +1,312 @@
+---
+title: "Penalized Regression, Logistic Regression, and Classification"
+author: "Hunter Wright"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+# Part 0: Getting Started
+
+```{r load data, include=FALSE}
+
+library(pacman)
+p_load(tidyverse, rlang, tidymodels, patchwork, stargazer, skimr, kableExtra, knitr, sandwich)
+
+election <- read_csv("data/election-2016.csv")
+
+election <- election %>%
+  mutate(
+    pct_repub2012 = n_votes_republican_2012/n_votes_total_2012
+  )
+
+```
+
+```{r exploratory plot, echo=FALSE, fig.height=3, fig.width=6.5}
+
+ggplot(election, aes(x = pct_repub2012, y = income_pc)) +
+  geom_point(alpha = 0.5) + geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Per Capita Income of Counties vs. Percentage Voting Republican",
+    y = "County Per Capita Income ",
+    x = "% Voted Republican"
+  ) +
+  theme_bw()
+
+model <- lm(pct_repub2012 ~ income_pc, election)
+
+tidy(model)
+```
+
+#### Analysis
+
+There is a weakly negative, statistically significant relationship between a county's per capita income and what percentage they voted Republican. In other words, poorer counties tended to vote slightly more Republican.
+
+```{r exploratory plot 2, echo=FALSE, fig.height=3, fig.width=8}
+
+vars <- c("pop_pct_below18", "pop_pct_above65", "pop_pct_female",  "pop_pct_asian", "pop_pct_black", "pop_pct_native", 'pop_pct_pacific', 'pop_pct_white', 'pop_pct_multiracial', 'pop_pct_hispanic')
+
+cor_subset <- election %>% select(i_republican_2016, all_of(vars))
+
+cor_matrix <- cor(cor_subset, use = "complete.obs")
+
+cor_df <- as.data.frame(as.table(cor_matrix)) %>%
+  filter(Var2 == "i_republican_2016" & Var1 %in% vars) %>%
+  mutate(race = Var1, correlation = Freq) %>%
+  select(race, correlation)
+
+labels <- c(
+  pop_pct_below18 = "% Below 18",
+  pop_pct_above65 = "% Above 65",
+  pop_pct_female = "% Female",
+  pop_pct_asian = "% Asian",
+  pop_pct_black = "% Black",
+  pop_pct_native = "% Native",
+  pop_pct_pacific = "% Pacific",
+  pop_pct_white = "% White",
+  pop_pct_multiracial = "% Multi-Race",
+  pop_pct_hispanic = "% Hispanic"
+)
+
+ggplot(cor_df, aes(x = race, y = 1, fill = correlation)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+                       midpoint = 0, limit = c(-1,1), space = "Lab",
+                       name = "Correlation") +
+  scale_x_discrete(labels = labels) +
+  theme_minimal() +
+  theme(axis.title = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(title = "Correlation Between Race Demographics and 2016 Republican Vote")
+
+kable(cor_df, caption = "Correlation between demographic percentages and 2016 Republican Vote")
+
+```
+
+#### Analysis
+
+Some demographics are more highly correlated with voting for Donald Trump in 2016 than others. A county's percentage of White residents and residents above the age of 65 had a stronger positive correlation with voting for Donald Trump. Counties' percentages of Asian and Black residents had stronger negative correlations with voting for Donald Trump.
+
+# Part 1: Penalized Regression
+
+## 01.
+
+```{r lasso}
+set.seed(432890)
+lambdas = 10^seq(from = 5, to = -2, length = 1e2)
+
+#set up republican2016 results as outcome
+#unselect unneeded variables
+lassoRecipe <- recipe(i_republican_2016 ~ ., data = select(election, -fips, -county, -state)) %>%
+  step_center(all_predictors()) %>% #subtract mean from all variables
+  step_scale(all_predictors()) # divide each by their sd
+#scaling required for lasso: evenly apply penalty
+
+#mixture of 1: pure lasso
+#tune penalty
+lassoModel <- linear_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet")
+
+#bundle everything together
+lassoWorkflow <- workflow() %>%
+  add_recipe(lassoRecipe) %>%
+  add_model(lassoModel)
+
+#5 fold cross-validation
+folds <- vfold_cv(election, v = 5)
+
+lassoTune <- tune_grid( 
+  lassoWorkflow,
+  resamples = folds,
+  grid = expand_grid(penalty = lambdas), 
+  metrics = metric_set(rmse) #evaluate based on RMSE
+)
+
+show_best(lassoTune, metric = "rmse")
+
+```
+
+## 02.
+
+The penalty for the "best" model was 1.032342e-03.
+
+## 03.
+
+The metric I used to define my "best" model was the mean RMSE, recorded in the "mean" column of the outputted tibble. My best mean RMSE was 0.205, which makes sense in the context of the data. The predicted outcome is binary, so an RMSE of 0.205 means the model's predicted probabilities are off by about 20%.
+
+## 04.
+
+```{r elastic net}
+set.seed(432890)
+alphas = seq(from = 0, to = 1, by = 0.01)
+
+elasticNetRecipe <- recipe(i_republican_2016 ~ ., data = select(election, -fips, -county, -state)) %>%
+  step_center(all_predictors()) %>% #subtract mean from all variables
+  step_scale(all_predictors()) # divide each by their sd
+
+
+#change mixture = 1 to mixture = tune() for elastic net
+elasticNetModel <- linear_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet")
+
+elasticNetWorkflow <- workflow() %>%
+  add_recipe(elasticNetRecipe) %>%
+  add_model(elasticNetModel)
+
+elasticNetTune <- tune_grid( 
+  elasticNetWorkflow,
+  resamples = folds,
+  grid = expand_grid(mixture = alphas, penalty = lambdas),
+  metrics = metric_set(rmse)
+)
+
+show_best(elasticNetTune, metric = "rmse")
+```
+
+## 05.
+
+The chosen hyperparameters suggest a ridge-regularization dominant model. Because the best model has a mixture of 0.18, the contribution from LASSO (eliminating unneeded variables) is low. This means that most of the variables in the data set are contributing some important information.
+
+# Part 2: Logistic Regression
+
+## 06.
+
+```{r}
+set.seed(432890)
+
+election <- election %>% # change variable to factor for logistic reg
+  mutate(r2016factor = factor(i_republican_2016, levels = c(0, 1)))
+
+logisticModel <- logistic_reg(mode = "classification") %>% 
+  set_engine("glm", family = "binomial")
+
+#recipe needs to be updated with factor
+logisticRecipe <- recipe(r2016factor ~ ., data = select(election, -fips, -county, -state, -i_republican_2016 )) %>%
+  step_center(all_numeric_predictors()) %>% #subtract mean from all variables
+  step_scale(all_numeric_predictors()) # divide each by their sd
+
+logisticWorkflow <- workflow() %>%
+  add_recipe(logisticRecipe) %>%
+  add_model(logisticModel)
+
+folds <- vfold_cv(election, v = 5)
+
+metric <- metric_set(accuracy, precision, sensitivity, specificity, roc_auc)
+
+#fit model and collect metrics
+logisticFit <- fit_resamples(
+  logisticWorkflow,
+  resamples = folds,
+  metrics = metric,
+  control = control_resamples(save_pred = TRUE)
+)
+
+collect_metrics(logisticFit)
+```
+
+## 07.
+
+The output shows an accuracy of 0.9794615, or 98%. This means that on average, the logistic model correctly classifies about 98% of the observations across the 5 folds.
+
+## 08.
+
+The null classifier in this sense would be just guessing the majority class. A quick Google search shows that Trump won about 83% of counties in 2016, which means the 98% accuracy is very good.
+
+## 09.
+
+A precision of 0.93 means that there is a low false positive rate. It also selects about 94% of the true positives (identifying them as positive). A specificity of 0.986 means the model correctly identifies 99% of negatives (very few false positives). The ROC AUC is also almost 100%, meaning it can distinguish between the two classes very well.
+
+# Part 3: Logistic Lasso
+
+## 10.
+
+```{r logistic lasso}
+set.seed(432890)
+
+logisticLassoModel <- logistic_reg(penalty = tune(), mixture = 1, mode = "classification") %>% 
+  set_engine("glmnet", family = "binomial")
+
+logisticLassoRecipe <- recipe(r2016factor ~ ., data = select(election, -fips, -county, -state, -i_republican_2016 )) %>%
+  step_center(all_numeric_predictors()) %>% 
+  step_scale(all_numeric_predictors()) 
+
+logisticLassoWorkflow <- workflow() %>%
+  add_recipe(logisticLassoRecipe) %>%
+  add_model(logisticLassoModel)
+
+folds <- vfold_cv(election, v = 5)
+
+#fit model and collect metrics
+logisticLassoFit <- tune_grid(
+  logisticLassoWorkflow,
+  grid = expand_grid(penalty = lambdas),
+  resamples = folds,
+  metrics = metric,
+  control = control_resamples(save_pred = TRUE)
+)
+
+collect_metrics(logisticLassoFit)
+```
+
+## 11.
+
+This model presented the following metrics: accuracy \~97.75%, precision \~94.1%, ROC AUC \~99.57%, sensitivity \~91.54%, specificity \~98.93%. These are all excellent, but not as good as the previous logistic regression model.
+
+## 12.
+
+I think that it could help. The first elastic net model that I did was mainly ridge and improved upon the lasso model, so I don't see why it wouldn't do the same in this case. That being said, there isn't a lot of improvement that can be made.
+
+# Part 4: Reflection
+
+## 13.
+
+Both have their strengths and weaknesses. In lecture, we covered how lasso was great for selection and sparse models, but won't help much if there aren't a lot of uselss coefficients. Elastic net takes lasso and improves on its weaknesses with ridge, but is much more computationally demanding (My elastic net takes almost 30 seconds to run).
+
+## 14.
+
+The most basic difference between linear and logisitic regression is the outcome. Linear regressions use OLS, while logistic regressions use MLE. Linear regressions predict continuous (numeric) outcomes, while logistic regression mostly predicts binary outcomes. Additionally, linear regression coefficients predict change in outcome per-unit change in the predictor. Logistic regression coefficients represent the change in the log-odds of the outcome per unit change in the predictor. They are similar in the sense that they model an outcome as a function of one or more predictors, and they both make assumptions about independence.
+
+## 15.
+
+I would care about accuracy the most, but I would keep a careful eye on both sensitivity and specificity. I could have a decent accuracy rate but one of the other two could be high while the other is low. I think looking at all three would be most important, but I would mainly be focused on accuracy.
+
+## 16.
+
+No. I think most of the variables have changed substantially enough in the past 6-10 years to render this model pretty ineffective at prediction, especially for the 2024 election.
+
+## 17.
+
+I don't think so. Because certain counties are in close proximity to each other, they may share the same socioeconomic, political, and ideological identities as each other, which violates the assumption that observations are independent and identically distributed. Instead, cluster sampling with geographically similar counties might prove to be a better sampling method.
+
+## 18.
+
+$R^2 = 1- \frac{RSS}{TSS}$
+
+For RSS, if the classification is correct: the residual is 0, if not, the residual is 1.
+
+For TSS: $\sum_{i=1}^n (y_i - \bar{y})^2 = n \bar{y} (1-\bar{y})$, This is the variance.
+
+Therefore, the $R^2$ is equal to one minus the number of incorrect classifications over $n\bar{y} (1-\bar{y})$
+
+In essence, the $R^2$ is equal to the number of misclassifications by the model over the baseline variability.
+
+## 19.
+
+When the outcome is binary and the prediction is a probability, $R^2 = 1 - \frac{\sum_{i=1}^n \left(y_i - \hat{p}_i\right)^2}{n\,\bar{y}(1-\bar{y})}$
+
+This is the same as the last question, except that RSS is different because it is a probability, not an outcome. RSS is no longer either 1 or 0, which means for each observation, there is residual $y_i - \bar{y}$. $R^2$ tells us the proportional reduction in the squared error by using the model’s probability predictions compared to simply predicting the average outcome $\bar{y}$.
+
+
+## 20.
+
+So far, the most interesting concept I've learned in this class is what machine learning actually means. It might sound kind of dumb, but before this class, I had no idea what machine learning really was, and it seemed pretty scary. I think learning exactly what it is and all the different examples has been really eye opening for me because it isn't as complex or as difficult as I thought. It is still complex and difficult, but not on the level I had imagined it to be.
+
+
+
+
+

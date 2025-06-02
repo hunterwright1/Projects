@@ -1,0 +1,336 @@
+---
+title: "Project004"
+author: "Hunter Wright"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pacman)
+p_load(readr, tidyverse, dplyr, skimr, janitor, broom, caret, glmnet,  tidymodels, collapse, rpart.plot, data.table, mc2d, parallel, ranger, xgboost, tictoc)
+train <- read_csv("data/train.csv")
+test <- read_csv("data/test.csv")
+set.seed(5481032)
+tic("Time to render")
+```
+
+## Goal: Estimate at least three predictive models of SalePrice using the training data.
+
+```{r Train Data Clean/Manipulation, include=FALSE}
+train <- train %>%
+  clean_names(case = "lower_camel") %>%
+  rename("SalePrice" = "salePrice") %>%
+  rename("firstFloorSqFt" = "x1StFlrSf") %>%
+  rename("secondFloorSqFt" = "x2NdFlrSf") %>%
+  rename("threeSznPorch" = "x3SsnPorch") %>%
+  mutate(
+    alley = case_when(
+      is.na(alley) ~ "None",
+      alley == "Grvl" ~ "Grvl",
+      alley == "Pave" ~ "Pave"
+    )
+  ) %>%
+  mutate(
+    bsmtQual = case_when(
+      is.na(bsmtQual) ~ "Nb",
+      TRUE ~ bsmtQual
+    )
+  ) %>%
+  mutate(
+    bsmtCond = case_when(
+      is.na(bsmtCond) ~ "Nb",
+      TRUE ~ bsmtCond
+    )
+  )
+
+train[sapply(train, is.character)] <- lapply(train[sapply(train, is.character)], as.factor)
+
+test[sapply(test, is.character)] <- lapply(test[sapply(test, is.character)], as.factor)
+
+```
+
+```{r Test Data Clean/Manipulation, include=FALSE}
+test <- test %>%
+  clean_names(case = "lower_camel") %>%
+  rename("firstFloorSqFt" = "x1StFlrSf") %>%
+  rename("secondFloorSqFt" = "x2NdFlrSf") %>%
+  rename("threeSznPorch" = "x3SsnPorch") %>%
+  mutate(
+    alley = case_when(
+      is.na(alley) ~ "None",
+      alley == "Grvl" ~ "Grvl",
+      alley == "Pave" ~ "Pave"
+    )
+  ) %>%
+  mutate(
+    bsmtQual = case_when(
+      is.na(bsmtQual) ~ "Nb",
+      TRUE ~ bsmtQual
+    )
+  ) %>%
+  mutate(
+    bsmtCond = case_when(
+      is.na(bsmtCond) ~ "Nb",
+      TRUE ~ bsmtCond
+    )
+  )
+
+```
+
+```{r random forest attempt 1}
+set.seed(5481032)
+
+cv <- train %>% vfold_cv(v = 5) #cv split
+
+recipe <- recipe(SalePrice ~ ., data = train) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors())
+
+# define forest
+forest <- rand_forest(
+  mode = "regression",
+  mtry = tune(), # # of predictors selected at each split
+  trees = 100,
+  min_n = tune() # minimum # of observations required in a node for a split to occur
+  ) %>% 
+set_engine(
+  engine = "ranger")
+
+workflow <- workflow() %>%
+  add_model(forest) %>%
+  add_recipe(recipe)
+
+# parameter grid 
+forest_grid <- grid_regular(
+  mtry(range = c(1, ncol(train) - 1)), 
+  min_n(range = c(2, 10)),
+  levels = 10
+)
+
+randomforest <- workflow %>%
+  tune_grid(
+    resamples = cv,
+    grid = forest_grid,
+    metrics = metric_set(rmse)
+  )
+
+top_flow <- workflow %>% 
+  finalize_workflow(select_best(randomforest, metric = "rmse")) %>%
+  fit(data = train)
+
+best_forest <- top_flow %>% 
+  extract_fit_parsnip()
+
+prediction1 <- predict(best_forest, new_data = test)
+
+randforest_pred <- data.frame(test$id, prediction1)
+
+randforest_pred <- randforest_pred %>%
+  rename("Id" = "test.id") %>%
+  rename("SalePrice" = ".pred")
+
+```
+
+```{r Approach 1 csv, eval=FALSE}
+write.csv(randforest_pred, file = "predictions/randforestpred.csv", row.names = FALSE)
+
+# Score: 0.14768
+```
+
+```{r random forest attempt 2}
+set.seed(5481032)
+
+recipe2 <- recipe(SalePrice ~ ., data = train) %>%
+  step_impute_knn(all_predictors()) %>% #impute with k nearest neighbors
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+# define forest
+forest2 <- rand_forest(
+  mode = "regression",
+  mtry = tune(), # # of predictors selected at each split
+  trees = 300,
+  min_n = tune() # minimum # of observations required in a node for a split to occur
+  ) %>% 
+set_engine(
+  engine = "ranger")
+
+workflow2 <- workflow() %>%
+  add_model(forest2) %>%
+  add_recipe(recipe2)
+
+# parameter grid 
+forest_grid2 <- grid_random(
+  mtry(range = c(1, ncol(train) - 1)), 
+  min_n(range = c(2, 20)),
+  size = 30
+)
+
+randomforest2 <- workflow2 %>%
+  tune_grid(
+    resamples = cv,
+    grid = forest_grid2,
+    metrics = metric_set(rmse)
+  )
+
+top_flow2 <- workflow2 %>% 
+  finalize_workflow(select_best(randomforest2, metric = "rmse")) %>%
+  fit(data = train)
+
+best_forest2 <- top_flow2 %>% 
+  extract_fit_parsnip()
+
+prediction2 <- predict(top_flow2, new_data = test)
+
+randforest_pred2 <- data.frame(test$id, prediction2)
+
+randforest_pred2 <- randforest_pred2 %>%
+  rename("Id" = "test.id") %>%
+  rename("SalePrice" = ".pred")
+
+```
+
+```{r Approach 2 csv, eval=FALSE}
+write.csv(randforest_pred2, file = "predictions/randforestpred2.csv", row.names = FALSE)
+
+# Score: 0.14582
+```
+
+
+```{r approach 3: Boosting}
+set.seed(5481032)
+
+boost_recipe <- recipe(SalePrice ~ ., data = train) %>%
+  step_impute_knn(all_predictors()) %>% #impute with k nearest neighbors
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+# initialize boost model, new relevant parameters identified
+boosted_tree <- boost_tree(
+  mode = "regression",
+  trees = tune(),
+  tree_depth = tune(), # max depth of each tree
+  learn_rate = tune(), # shrinkage factor
+  min_n = tune()
+) %>% 
+  set_engine("xgboost")
+
+# create boosted workflow
+boost_flow <- workflow() %>%
+  add_model(boosted_tree) %>%
+  add_recipe(boost_recipe)
+
+#tuning grid
+boost_grid <- expand_grid(
+  trees = c(100, 200),
+  tree_depth = c(2, 5, 10),
+  learn_rate = c(0.01, 0.05, 0.1),
+  min_n = c(1, 5, 10)
+)
+
+# tune using cv
+boost_fit <- boost_flow %>%
+  tune_grid(
+    resamples = cv,
+    grid = boost_grid,
+    metrics = metric_set(rmse)
+  )
+
+best_flow <- boost_flow %>% 
+  finalize_workflow(select_best(boost_fit, metric = "rmse")) %>%
+  fit(data = train)
+
+best_boost <- best_flow %>% 
+  extract_fit_parsnip()
+
+prediction3 <- predict(best_flow, new_data = test)
+
+boost_pred <- data.frame(test$id, prediction3)
+
+boost_pred <- boost_pred %>%
+  rename("Id" = "test.id") %>%
+  rename("SalePrice" = ".pred")
+```
+
+```{r Approach 3 csv, eval=FALSE}
+write.csv(boost_pred, file = "predictions/boostprediction.csv", row.names = FALSE)
+
+# Score: 0.13278
+```
+
+
+```{r approach 4: boosted}
+set.seed(5481032)
+
+boost_recipe2 <- recipe(SalePrice ~ ., data = train) %>%
+  step_impute_knn(all_predictors()) %>% #impute with k nearest neighbors
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+# initialize boosted trees
+boosted_tree2 <- boost_tree(
+  mode = "regression",
+  trees = tune(),
+  tree_depth = tune(), 
+  learn_rate = tune(), 
+  min_n = tune(),
+  loss_reduction = tune(), 
+  sample_size = tune(),    
+  mtry = tune() 
+) %>% 
+  set_engine("xgboost", counts = FALSE)
+
+# create boosted workflow
+boost_flow2 <- workflow() %>%
+  add_model(boosted_tree2) %>%
+  add_recipe(boost_recipe2)
+
+boost_grid2 <- expand_grid(
+  trees = c(100, 200),
+  tree_depth = 5,
+  learn_rate = c(0.05, 0.1),
+  min_n = c(1, 5),
+  loss_reduction = c(0, 1, 5),
+  sample_size = c(0.6, 0.8, 1.0),
+  mtry = c(0.6, 0.8, 1.0)
+)
+
+# tune using cv
+boost_fit2 <- boost_flow2 %>%
+  tune_grid(
+    resamples = cv,
+    grid = boost_grid2,
+    metrics = metric_set(rmse)
+  )
+
+best_flow2 <- boost_flow2 %>% 
+  finalize_workflow(select_best(boost_fit2, metric = "rmse")) %>%
+  fit(data = train)
+
+best_boost2 <- best_flow2 %>% 
+  extract_fit_parsnip()
+
+best_boost2
+
+prediction4 <- predict(best_flow2, new_data = test)
+
+boost_pred2 <- data.frame(test$id, prediction4)
+
+boost_pred2 <- boost_pred2 %>%
+  rename("Id" = "test.id") %>%
+  rename("SalePrice" = ".pred")
+
+
+```
+
+```{r Approach 4 csv, eval=FALSE}
+write.csv(boost_pred2, file = "predictions/boostprediction2.csv", row.names = FALSE)
+
+# Score: 0.13206
+```
+
+`r paste(capture.output(toc()), collapse = "\n")`
+
+List of all of my public submissions to Kaggle:
+
+<img src="ss.png" style="width: 100%;"/>
+
+

@@ -1,0 +1,426 @@
+---
+title: "Project003"
+author: "Hunter Wright"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+# Part 0: Data Cleaning
+
+## 0.1
+```{r load data}
+# Load packages
+library(pacman)
+p_load(palmerpenguins, tidymodels, skimr, tidyverse, collapse, rpart.plot, data.table, mc2d, parallel, ranger, xgboost)
+# Load the penguin data
+data('penguins')
+#skim(penguins)
+
+penguins <- penguins %>%
+  rename(billLength = bill_length_mm) %>%
+  rename(billDepth = bill_depth_mm) %>%
+  rename(flipperLength = flipper_length_mm) %>%
+  rename(bodyMass = body_mass_g)
+```
+
+## 0.2
+
+Imputation is the process of filling in missing data in a dataset. This can be done in several different ways, like using the mean of the existing data.
+
+## 0.3
+
+```{r manual imputation}
+
+penguins_impute <- penguins %>%
+  mutate(billLength = replace(billLength, is.na(billLength), median(billLength, na.rm = TRUE))) %>%
+  mutate(billDepth = replace(billDepth, is.na(billDepth), median(billDepth, na.rm = TRUE))) %>%
+  mutate(flipperLength = replace(flipperLength, is.na(flipperLength),                                median(flipperLength, na.rm = TRUE))) %>%
+  mutate(bodyMass = replace(bodyMass, is.na(bodyMass), median(bodyMass, na.rm = TRUE))) %>%
+  mutate(sex = replace(sex, is.na(sex), "male")) #168 males, 165 females
+
+```
+
+## 0.4
+
+```{r tidymodels imputation}
+
+imputeRecipe <- recipe(species ~ ., data = penguins)
+
+tidymodels_impute <- imputeRecipe %>% 
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  prep() %>% bake(penguins)
+
+data <- tidymodels_impute
+
+```
+
+## 0.5
+
+We could specify certain predictors during imputation that could affect the data we impute. For example, if we know that male penguins have longer bills, we could apply that knowledge to the model to fill in missing bill length data. Our male predictions would have slightly longer bills than our female predictions. This can be applied to many other variables, and is important because it means we would be making educated guesses, rather than just filling in missing data with means and medians.
+
+# Part 1: A short tree
+
+## 1.1
+
+There are three possible splits, {A, B or C}, {B, A or C}, and {C, A or B}.
+
+## 1.2
+
+```{r handcrafted tree}
+
+
+islands = penguins_impute$island %>% unique()
+lapply(X = islands, FUN = function(i) {
+  # Split into Biscoe and not Biscoe
+  grp1 = penguins_impute %>% filter(island == "Biscoe")
+  grp2 = penguins_impute %>% filter(island != "Biscoe")
+  # Find the modal species in each group
+  species1 = grp1$species %>% fmode()
+  species2 = grp2$species %>% fmode()
+  # Calculate accuracy
+  fmean(grp1$species == species1)
+  fmean(grp2$species == species2)
+  # Calculate gini
+  g1 = grp1$species %>% table()  %>%  prop.table()
+  g2 = grp2$species %>% table()  %>%  prop.table()
+  gini1 = sum(g1 * (1 - g1))
+  gini2 = sum(g2 * (1 - g2))
+})
+
+# Gini: 0.4741736
+
+
+lapply(X = islands, FUN = function(i) {
+  # Split into Dream and not Dream
+  grp1 = penguins_impute %>% filter(island == "Dream")
+  grp2 = penguins_impute %>% filter(island != "Dream")
+  # Find the modal species in each group
+  species1 = grp1$species %>% fmode()
+  species2 = grp2$species %>% fmode()
+  # Calculate accuracy
+  fmean(grp1$species == species1)
+  fmean(grp2$species == species2)
+  # Calculate gini
+  g1 = grp1$species %>% table()  %>%  prop.table()
+  g2 = grp2$species %>% table()  %>%  prop.table()
+  gini1 = sum(g1 * (1 - g1))
+  gini2 = sum(g2 * (1 - g2))
+})
+
+# Gini: 0.4919008
+
+lapply(X = islands, FUN = function(i) {
+  # Split into Torgersen and not Torgersen
+  grp1 = penguins_impute %>% filter(island == "Torgersen")
+  grp2 = penguins_impute %>% filter(island != "Torgersen")
+  # Find the modal species in each group
+  species1 = grp1$species %>% fmode()
+  species2 = grp2$species %>% fmode()
+  # Calculate accuracy
+  fmean(grp1$species == species1)
+  fmean(grp2$species == species2)
+  # Calculate gini
+  g1 = grp1$species %>% table()  %>%  prop.table()
+  g2 = grp2$species %>% table()  %>%  prop.table()
+  gini1 = sum(g1 * (1 - g1))
+  gini2 = sum(g2 * (1 - g2))
+})
+
+# Gini: 0.6481516
+
+```
+
+
+## 1.3
+
+```{r 2nd handcrafted tree}
+sexes = penguins_impute$sex %>% unique()
+lapply(X = sexes, FUN = function(i) {
+  # Split into male and not male
+  grp1 = penguins_impute %>% filter(sex == "male")
+  grp2 = penguins_impute %>% filter(sex != "male")
+  # Find the modal species in each group
+  species1 = grp1$species %>% fmode()
+  species2 = grp2$species %>% fmode()
+  # Calculate accuracy
+  fmean(grp1$species == species1)
+  fmean(grp2$species == species2)
+  # Calculate gini
+  g1 = grp1$species %>% table()  %>%  prop.table()
+  g2 = grp2$species %>% table()  %>%  prop.table()
+  gini1 = sum(g1 * (1 - g1))
+  gini2 = sum(g2 * (1 - g2))
+})
+
+# Gini: 0.6382369
+
+lapply(X = sexes, FUN = function(i) {
+  # Split into female and not female
+  grp1 = penguins_impute %>% filter(sex == "female")
+  grp2 = penguins_impute %>% filter(sex != "female")
+  # Find the modal species in each group
+  species1 = grp1$species %>% fmode()
+  species2 = grp2$species %>% fmode()
+  # Calculate accuracy
+  fmean(grp1$species == species1)
+  fmean(grp2$species == species2)
+  # Calculate gini
+  g1 = grp1$species %>% table()  %>%  prop.table()
+  g2 = grp2$species %>% table()  %>%  prop.table()
+  gini1 = sum(g1 * (1 - g1))
+  gini2 = sum(g2 * (1 - g2))
+})
+
+# Gini: 0.6331887
+```
+
+## 1.4
+I would split for body mass. I think that there is probably a significant difference in body mass on average between the all the species of penguins, so splitting between different body masses could help predict species.
+
+## 1.5
+For bill length, I think splits based on certain benchmarks or perceived differences in species would be the best way to craft a decision tree.
+```{r bill length tree}
+data %>%
+  group_by(species) %>%
+  summarize(
+    mean = mean(billLength)
+  )
+```
+After finding the average bill length for each species, there's a clear split between Adelie, which has a shorter bill, and Chinstrap and Gentoo, with similarly longer bills.
+
+In a more complex tree, we might look at each unique bill length in the data set and split into groups that are larger or smaller than the selected length. Based on the "purity" of each split, you can evaluate its performance. In other words, if the split results in a mix of species, it probably isn't very good, but if it results in a high number of one species in one of the groups, (Like splitting at 40mm or so based on the averages) it's probably a better split.
+
+
+# Part 2: A bigger tree
+
+## 2.1
+```{r tidymodels tree}
+set.seed(549302)
+
+species_cv <- penguins %>% vfold_cv(v = 5) #cv split
+
+# define tree
+species_tree <- decision_tree(
+  mode = "classification",
+  cost_complexity = tune(),
+  tree_depth = tune(),
+  min_n = 10 # adjust if needed
+) %>% 
+  set_engine("rpart")
+
+# recipe with imputation
+species_recipe <- recipe(species ~ ., data = penguins) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors())
+
+# create workflow
+species_flow <- workflow() %>%
+  add_model(species_tree) %>%
+  add_recipe(species_recipe)
+
+# tune model
+species_cv_fit <- species_flow %>%
+  tune_grid(
+    resamples = species_cv,
+    grid = expand_grid(
+      cost_complexity = seq(0, 0.15, by = 0.01),
+      tree_depth = c(1, 2, 5, 10)),
+    metrics = metric_set(accuracy, roc_auc)
+  )
+
+best_flow <- species_flow %>% 
+  finalize_workflow(select_best(species_cv_fit, metric = "accuracy")) %>%
+  fit(data = penguins)
+
+best_tree <- best_flow %>% 
+  extract_fit_parsnip()
+
+best_tree$fit %>% 
+  rpart.plot(roundint = FALSE)
+```
+
+## 2.2
+
+The best tree did not need pruning. We can verify this by running the following command:
+```{r cost complexity command}
+printcp(best_tree$fit)
+```
+The output shows that the tree with the lowest xerror was the tree with 6 splits, that had a cost complexity of zero, indicating that the tree was not pruned.
+
+# Part 3: More trees and more randomness
+
+## 3.1
+
+Building upon my work from part 1 to grow a random forest is simple. Switching from decision_tree() to rand_forest() and adding the appropriate arguments while retaining most of the other code I already have for the recipe and workflow.
+
+
+## 3.2
+
+```{r first random forest}
+set.seed(549302)
+
+species_cv <- penguins %>% vfold_cv(v = 5) #cv split
+
+# recipe with imputation
+species_recipe <- recipe(species ~ ., data = penguins) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors())
+
+# define forest
+species_forest <- rand_forest(
+  mode = "classification",
+  mtry = tune(), # relevant parameter: # of predictors selected at each split
+  trees = 100,
+  min_n = tune() # relevant parameter: minimum # of observations required in a node for a split to occur
+  ) %>% 
+  set_engine(
+    engine = "ranger", # switch to ranger engine
+    splitrule = "gini")  # splitting rule
+  
+# create workflow
+forest_flow <- workflow() %>%
+  add_model(species_forest) %>% # forest model
+  add_recipe(species_recipe) # same recipe
+
+# parameter grid 
+forest_grid = expand_grid(
+  mtry = 1:13,
+  min_n = 1:15
+)
+
+# tune forest
+randomforest <- forest_flow %>%
+  tune_grid(
+    resamples = species_cv,
+    grid = forest_grid,
+    metrics = metric_set(accuracy, roc_auc)
+  )
+
+best_forest_flow <- forest_flow %>% 
+  finalize_workflow(select_best(randomforest, metric = "accuracy")) %>%
+  fit(data = penguins)
+
+best_forest <- best_forest_flow %>% 
+  extract_fit_parsnip()
+
+best_forest
+
+
+```
+
+The model with the lowest OOB error had an mtry value of 1 and an OOB error of 0.0323.
+
+## 3.3
+
+```{r second random forest}
+set.seed(549302)
+
+species_cv <- penguins %>% vfold_cv(v = 5) #cv split
+
+# recipe with fancy imputation
+fancy_recipe <- recipe(species ~ ., data = penguins) %>%
+  step_impute_bag(all_predictors())
+  
+# create updated workflow
+forest_flow_fancy <- workflow() %>%
+  add_model(species_forest) %>% # forest model (already initialized)
+  add_recipe(fancy_recipe) # fancy recipe
+
+# tune forest
+randomforest_fancy <- forest_flow_fancy %>%
+  tune_grid(
+    resamples = species_cv,
+    grid = forest_grid,
+    metrics = metric_set(accuracy, roc_auc)
+  )
+
+best_fancy_forest_flow <- forest_flow_fancy %>% 
+  finalize_workflow(select_best(randomforest_fancy, metric = "accuracy")) %>%
+  fit(data = penguins)
+
+best_fancy_forest <- best_fancy_forest_flow %>% 
+  extract_fit_parsnip()
+
+best_fancy_forest
+
+fancy_roc_auc <- randomforest_fancy %>% collect_metrics() %>% filter(.metric == "roc_auc")
+```
+
+## 3.4
+
+Fancier imputation actually increased my OOB error. The added complexity of the fancy imputation may have backfired and increased the error slightly.
+
+## 3.5
+
+The main issue is data leakage. If you impute before cross validation, you could use what should be "unseen information" from the validation data. This could lead to inflated performance estimates from overfitting the validation data.
+
+# Part 4: Boosting
+
+## 4.1
+
+Instead of creating one big tree, boosting focuses on creating smaller, sequential trees, each focusing on misclassified cases from previous trees. Boosting leads to more accurate predictions over time, as each tree tries to correct the previous tree's mistakes.
+
+## 4.2
+
+```{r boosted trees}
+set.seed(549302)
+
+boost_recipe <- recipe(species ~ ., data = penguins) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) # prevent non-numeric error
+
+# initialize boost model, new relevant parameters identified
+species_boost <- boost_tree(
+  mode = "classification",
+  trees = tune(),
+  tree_depth = tune(), # max depth of each tree
+  learn_rate = tune(), # shrinkage factor
+  min_n = tune()
+) %>% 
+  set_engine("xgboost")
+
+# create boosted workflow
+boost_flow <- workflow() %>%
+  add_model(species_boost) %>%
+  add_recipe(boost_recipe)
+
+#tuning grid
+boost_grid <- expand_grid(
+  trees = c(50, 100, 200),
+  tree_depth = c(1, 2, 5, 10),
+  learn_rate = c(0.01, 0.05, 0.1),
+  min_n = c(1, 5, 10)
+)
+
+# tune using cv
+boost_fit <- boost_flow %>%
+  tune_grid(
+    resamples = species_cv,
+    grid = boost_grid,
+    metrics = metric_set(accuracy, roc_auc)
+  )
+
+
+
+best_boosted_flow <- boost_flow %>% 
+  finalize_workflow(select_best(boost_fit, metric = "accuracy")) %>%
+  fit(data = penguins)
+
+best_boost <- best_boosted_flow %>% 
+  extract_fit_parsnip()
+
+best_boost
+
+boost_roc_auc <- boost_fit %>% collect_metrics() %>% filter(.metric == "roc_auc")
+
+
+```
+
+## 4.3
+
+Boosting appears to give similar results to random forests. Using the roc auc measure, both the fancy forest and boosted model gave similarly high roc auc measurements. This mirrors what we saw in class, which was similar accuracies between bagged and boosted models.

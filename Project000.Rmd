@@ -1,0 +1,203 @@
+---
+title: "EC424_Project000"
+author: "Hunter Wright"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pacman)
+p_load(readr, tidyverse, ggplot2, dplyr, skimr, janitor, broom, caret, glmnet)
+trainOLD <- read_csv("data/train.csv")
+testOLD <- read_csv("data/test.csv")
+set.seed(5784392)
+```
+
+## Goal: Estimate at least three predictive models of SalePrice using the training data.
+
+```{r Train Data Clean/Manipulation, include=FALSE}
+train <- trainOLD %>%
+  clean_names(case = "lower_camel") %>%
+  rename("SalePrice" = "salePrice") %>%
+  rename("firstFloorSqFt" = "x1StFlrSf") %>%
+  rename("secondFloorSqFt" = "x2NdFlrSf") %>%
+  rename("threeSznPorch" = "x3SsnPorch") %>%
+  mutate(
+    alley = case_when(
+      is.na(alley) ~ "None",
+      alley == "Grvl" ~ "Grvl",
+      alley == "Pave" ~ "Pave"
+    )
+  ) %>%
+  mutate(
+    bsmtQual = case_when(
+      is.na(bsmtQual) ~ "Nb",
+      TRUE ~ bsmtQual
+    )
+  ) %>%
+  mutate(
+    bsmtCond = case_when(
+      is.na(bsmtCond) ~ "Nb",
+      TRUE ~ bsmtCond
+    )
+  )
+
+```
+
+```{r Test Data Clean/Manipulation}
+test <- testOLD %>%
+  clean_names(case = "lower_camel") %>%
+  rename("firstFloorSqFt" = "x1StFlrSf") %>%
+  rename("secondFloorSqFt" = "x2NdFlrSf") %>%
+  rename("threeSznPorch" = "x3SsnPorch") %>%
+  mutate(
+    alley = case_when(
+      is.na(alley) ~ "None",
+      alley == "Grvl" ~ "Grvl",
+      alley == "Pave" ~ "Pave"
+    )
+  ) %>%
+  mutate(
+    bsmtQual = case_when(
+      is.na(bsmtQual) ~ "Nb",
+      TRUE ~ bsmtQual
+    )
+  ) %>%
+  mutate(
+    bsmtCond = case_when(
+      is.na(bsmtCond) ~ "Nb",
+      TRUE ~ bsmtCond
+    )
+  )
+
+```
+
+
+```{r Visualization of Sale Price}
+train %>%
+  ggplot(aes(x = SalePrice)) +
+  geom_histogram(fill = "grey", color = "black", bins = 40) +
+  labs(
+    x = "Sale Price (Thousands of $)",
+    y = "Count",
+    title = "Distribution of Sale Price in the Ames Housing Data"
+  ) +
+  scale_x_continuous(labels = c("0", "200", "400", "600", "800")) +
+  theme_bw()
+
+```
+
+```{r Approach 1: OLS, include=FALSE}
+
+control <- trainControl(method = "cv", number = 5) 
+
+# Variables hand selected based on perceived importance
+
+fit_cv <- train(
+   SalePrice ~ factor(street) + lotArea + overallQual + overallCond + yearBuilt + factor(neighborhood) + factor(bldgType) + factor(houseStyle) + yearRemodAdd + factor(exterQual) + factor(exterCond) + factor(heatingQc) + bedroomAbvGr + kitchenAbvGr,
+   data = train,                 
+   method = "lm",                
+   trControl = control           
+ )
+
+fit_cv
+# RMSE: 38,526
+# Rsquared: 0.764
+# MAE: 25,597.8
+
+
+prediction1 <- predict(fit_cv, newdata = test)
+
+OLS_Prediction1 <- data.frame(test$id, prediction1)
+
+OLS_Prediction1 <- OLS_Prediction1 %>%
+  rename("Id" = "test.id") %>%
+  rename("SalePrice" = "prediction1")
+
+
+```
+
+```{r Approach 1 CSV}
+write.csv(OLS_Prediction1, file = "predictions/OLS_Prediction.csv", row.names = FALSE)
+```
+
+```{r Approach 2: OLS}
+
+# Variables hand selected based on perceived importance
+
+fit_cv2 <- train(
+   SalePrice ~ factor(street) + lotArea + yearBuilt + factor(neighborhood) + factor(bldgType) + factor(houseStyle) + yearRemodAdd + factor(exterQual) + factor(exterCond) + factor(heatingQc) + bedroomAbvGr + kitchenAbvGr + overallCond*yearBuilt + overallQual*yearBuilt + overallCond*overallQual,
+   data = train,                 
+   method = "lm",                
+   trControl = control           
+ )
+
+fit_cv2 # RMSE: 38,616.39, Rsquared: 0.771, MAE: 25512.81
+
+prediction2 <- predict(fit_cv2, newdata = test)
+
+length(prediction2)
+
+OLS_Prediction2 <- data.frame(test$id, prediction2)
+
+OLS_Prediction2 <- OLS_Prediction2 %>%
+  rename("Id" = "test.id") %>%
+  rename("SalePrice" = "prediction2")
+```
+
+```{r Approach 2 CSV}
+write.csv(OLS_Prediction2, file = "predictions/OLS_Prediction2.csv", row.names = FALSE)
+```
+
+```{r Approach 3: LASSO}
+
+variables <- ~ street + lotArea + yearBuilt + neighborhood + bldgType + yearRemodAdd + exterQual + exterCond + heatingQc + bedroomAbvGr + kitchenAbvGr + overallCond + overallQual + bsmtCond
+
+lassoMatrix <- model.matrix(variables, data = train) # create matrix to convert factors to dummy
+
+lassoMatrix <- lassoMatrix[, -1] # drop intercept column
+
+lambdas = seq(0.001, 0.1, length = 10) #Define lambdas
+
+lassoFit = cv.glmnet( # initialize LASSO model
+  x = lassoMatrix,
+  y = log(train$SalePrice),
+  alpha = 1,
+  lambda = lambdas
+)
+
+lassoFit
+
+testMatrix <- model.matrix(variables, data = test)[, -1]
+
+# create prediction vector
+prediction3 <- predict(lassoFit, newx = testMatrix, s = "lambda.min") 
+
+# exponentiate prediction vector
+prediction3 <- exp(prediction3)
+
+lassoPrediction <- data.frame(test$id, prediction3)
+
+lassoPrediction <- lassoPrediction %>%
+  rename("Id" = "test.id") %>%
+  rename("SalePrice" = "lambda.min")
+
+```
+
+```{r Approach 3 CSV}
+write.csv(lassoPrediction, file = "predictions/lassoPrediction.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
